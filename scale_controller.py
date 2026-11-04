@@ -1,5 +1,6 @@
 
 # =====================================================
+# scale_controller.py
 # Scale Control GUI
 #
 # Developed by:
@@ -8,29 +9,16 @@
 # © 2026 Landon Boger
 # All Rights Reserved.
 #
-# Version 1.9
+# Version 2.1
 #
-# RS-485 Scale Communication Interface
+# RS-485 Sartorius scale communication.
 #
-# Communication is handled entirely by this.
-# The main TGA GUI does not contain scale communication.
+# Simulation calculations are contained entirely in:
 #
-# Sartorius 1773MP Communication:
-#     Baud Rate : 1200
-#     Data Bits : 7
-#     Parity    : Odd
-#     Stop Bits : 1
+#     simulated_temperature_controller.py
 #
-# Commands:
-#     ESC P = Request Weight
-#     ESC T = Tare
-#
-# IMPORTANT:
-#     Opening the COM port does NOT mean that the
-#     balance is connected.
-#
-#     The balance is considered connected only after
-#     ESC P produces a valid weight response.
+# This file only selects and communicates with either
+# the physical scale or the simulated scale device.
 # =====================================================
 
 import sys
@@ -60,33 +48,43 @@ from PyQt5.QtCore import (
     Qt,
 )
 
+from simulated_temperature_controller import (
+    SimulatedScaleDevice,
+    get_simulation_environment,
+)
+
 
 # =====================================================
-# Sartorius 1773MP Commands
+# Timing
 # =====================================================
 
-# ESC P
-# Request current weight
-#
-# HEX:
-#     1B 50
+# Poll the scale every six seconds.
+SCALE_POLL_INTERVAL = 6000
 
-REQUEST_WEIGHT = bytes([
-    0x1B,
-    0x50
-])
+# Evaluate health every six seconds.
+SCALE_HEALTH_CHECK_INTERVAL = 6000
+
+# Three polling intervals without data are allowed.
+SCALE_HEALTH_TIMEOUT = 18.0
 
 
-# ESC T
-# Tare balance
-#
-# HEX:
-#     1B 54
+# =====================================================
+# Sartorius Commands
+# =====================================================
 
-TARE = bytes([
-    0x1B,
-    0x54
-])
+REQUEST_WEIGHT = bytes(
+    [
+        0x1B,
+        0x50
+    ]
+)
+
+TARE = bytes(
+    [
+        0x1B,
+        0x54
+    ]
+)
 
 
 # =====================================================
@@ -95,11 +93,17 @@ TARE = bytes([
 
 class ScaleWorker(QObject):
 
-    connection_result = pyqtSignal(bool)
+    connection_result = pyqtSignal(
+        bool
+    )
 
-    weight_received = pyqtSignal(object)
+    weight_received = pyqtSignal(
+        object
+    )
 
-    error = pyqtSignal(str)
+    error = pyqtSignal(
+        str
+    )
 
     command_result = pyqtSignal(
         bool,
@@ -115,7 +119,7 @@ class ScaleWorker(QObject):
         self.read_in_progress = False
 
     # =================================================
-    # Get Available COM Ports
+    # Available COM Ports
     # =================================================
 
     @staticmethod
@@ -127,15 +131,7 @@ class ScaleWorker(QObject):
         ]
 
     # =================================================
-    # Connect
-    #
-    # IMPORTANT:
-    #
-    # The COM port opening successfully does NOT mean
-    # that the Sartorius balance is connected.
-    #
-    # The balance must respond to ESC P with a valid
-    # weight before connection_result(True) is emitted.
+    # Connect Physical Scale
     # =================================================
 
     def connect_scale(
@@ -146,26 +142,7 @@ class ScaleWorker(QObject):
 
         try:
 
-            # =================================================
-            # Close any previous connection
-            # =================================================
-
-            if self.serial is not None:
-
-                try:
-
-                    if self.serial.is_open:
-                        self.serial.close()
-
-                except Exception:
-
-                    pass
-
-                self.serial = None
-
-            # =================================================
-            # Open Serial Port
-            # =================================================
+            self._close_serial()
 
             self.serial = serial.Serial(
                 port=port,
@@ -182,7 +159,7 @@ class ScaleWorker(QObject):
 
             if not self.serial.is_open:
 
-                self.serial = None
+                self._close_serial()
 
                 self.connection_result.emit(
                     False
@@ -190,19 +167,9 @@ class ScaleWorker(QObject):
 
                 return
 
-            # =================================================
-            # Clear Old Data
-            # =================================================
-
             self.serial.reset_input_buffer()
 
             self.serial.reset_output_buffer()
-
-            # =================================================
-            # VERIFY BALANCE
-            #
-            # Send ESC P.
-            # =================================================
 
             self.serial.write(
                 REQUEST_WEIGHT
@@ -210,87 +177,7 @@ class ScaleWorker(QObject):
 
             self.serial.flush()
 
-            # =================================================
-            # Give the balance time to respond.
-            # =================================================
-
-            time.sleep(
-                0.25
-            )
-
-            # =================================================
-            # Read Response
-            #
-            # Continue reading until:
-            #
-            # 1. Data has arrived and the response is complete
-            # OR
-            #
-            # 2. The 2-second verification timeout expires.
-            # =================================================
-
-            response = bytearray()
-
-            start_time = time.monotonic()
-
-            last_data_time = None
-
-            while time.monotonic() - start_time < 2.0:
-
-                if self.serial.in_waiting:
-
-                    response.extend(
-                        self.serial.read(
-                            self.serial.in_waiting
-                        )
-                    )
-
-                    last_data_time = (
-                        time.monotonic()
-                    )
-
-                    time.sleep(
-                        0.05
-                    )
-
-                else:
-
-                    current_time = (
-                        time.monotonic()
-                    )
-
-                    # If data has arrived and no more data
-                    # has appeared for 50 ms, consider the
-                    # response complete.
-
-                    if (
-                        response
-                        and last_data_time is not None
-                        and (
-                            current_time
-                            - last_data_time
-                        ) >= 0.05
-                    ):
-
-                        break
-
-                    # Overall verification timeout.
-
-                    if (
-                        current_time
-                        - start_time
-                        >= 2.0
-                    ):
-
-                        break
-
-                    time.sleep(
-                        0.05
-                    )
-
-            # =================================================
-            # No Response
-            # =================================================
+            response = self._read_response()
 
             if not response:
 
@@ -307,32 +194,11 @@ class ScaleWorker(QObject):
 
                 return
 
-            # =================================================
-            # Parse Response
-            # =================================================
-
             weight = self.parse_weight(
                 bytes(response)
             )
 
-            # =================================================
-            # Invalid Response
-            # =================================================
-
             if weight is None:
-
-                try:
-
-                    response_text = bytes(
-                        response
-                    ).decode(
-                        "ascii",
-                        errors="replace"
-                    ).strip()
-
-                except Exception:
-
-                    response_text = "<unreadable>"
 
                 print(
                     "Scale connection verification failed: "
@@ -340,13 +206,8 @@ class ScaleWorker(QObject):
                 )
 
                 print(
-                    f"Scale response HEX: "
+                    "Scale response HEX: "
                     f"{bytes(response).hex(' ').upper()}"
-                )
-
-                print(
-                    f"Scale response ASCII: "
-                    f"{response_text}"
                 )
 
                 self._close_serial()
@@ -357,24 +218,11 @@ class ScaleWorker(QObject):
 
                 return
 
-            # =================================================
-            # BALANCE VERIFIED
-            # =================================================
-
-            print(
-                f"Sartorius balance verified. "
-                f"Initial weight: {weight}"
-            )
-
             self.read_in_progress = False
-
-            # Send the verified initial weight immediately.
 
             self.weight_received.emit(
                 weight
             )
-
-            # ONLY NOW report successful connection.
 
             self.connection_result.emit(
                 True
@@ -388,8 +236,6 @@ class ScaleWorker(QObject):
 
             self._close_serial()
 
-            self.read_in_progress = False
-
             self.error.emit(
                 str(exc)
             )
@@ -399,9 +245,57 @@ class ScaleWorker(QObject):
             )
 
     # =================================================
-    # Read Weight
-    #
-    # ESC P
+    # Read Complete Physical Response
+    # =================================================
+
+    def _read_response(self):
+
+        response = bytearray()
+
+        start_time = time.monotonic()
+
+        last_data_time = None
+
+        while (
+            time.monotonic()
+            - start_time
+            < 2.0
+        ):
+
+            if self.serial.in_waiting:
+
+                response.extend(
+                    self.serial.read(
+                        self.serial.in_waiting
+                    )
+                )
+
+                last_data_time = time.monotonic()
+
+                time.sleep(
+                    0.05
+                )
+
+            else:
+
+                now = time.monotonic()
+
+                if (
+                    response
+                    and last_data_time is not None
+                    and now - last_data_time >= 0.05
+                ):
+
+                    break
+
+                time.sleep(
+                    0.05
+                )
+
+        return response
+
+    # =================================================
+    # Read Physical Weight
     # =================================================
 
     def read_weight(self):
@@ -428,15 +322,7 @@ class ScaleWorker(QObject):
 
         try:
 
-            # =================================================
-            # Remove old response data
-            # =================================================
-
             self.serial.reset_input_buffer()
-
-            # =================================================
-            # Send ESC P
-            # =================================================
 
             self.serial.write(
                 REQUEST_WEIGHT
@@ -444,79 +330,7 @@ class ScaleWorker(QObject):
 
             self.serial.flush()
 
-            # =================================================
-            # Give the balance time to respond
-            # =================================================
-
-            time.sleep(
-                0.25
-            )
-
-            # =================================================
-            # Read Response
-            # =================================================
-
-            response = bytearray()
-
-            start_time = time.monotonic()
-
-            last_data_time = None
-
-            while time.monotonic() - start_time < 2.0:
-
-                if self.serial.in_waiting:
-
-                    response.extend(
-                        self.serial.read(
-                            self.serial.in_waiting
-                        )
-                    )
-
-                    last_data_time = (
-                        time.monotonic()
-                    )
-
-                    time.sleep(
-                        0.05
-                    )
-
-                else:
-
-                    current_time = (
-                        time.monotonic()
-                    )
-
-                    # Response is complete once data has
-                    # stopped arriving.
-
-                    if (
-                        response
-                        and last_data_time is not None
-                        and (
-                            current_time
-                            - last_data_time
-                        ) >= 0.05
-                    ):
-
-                        break
-
-                    # Do not wait forever.
-
-                    if (
-                        current_time
-                        - start_time
-                        >= 2.0
-                    ):
-
-                        break
-
-                    time.sleep(
-                        0.05
-                    )
-
-            # =================================================
-            # No Response
-            # =================================================
+            response = self._read_response()
 
             if not response:
 
@@ -525,10 +339,6 @@ class ScaleWorker(QObject):
                 )
 
                 return
-
-            # =================================================
-            # Parse Weight
-            # =================================================
 
             weight = self.parse_weight(
                 bytes(response)
@@ -557,7 +367,9 @@ class ScaleWorker(QObject):
     # =================================================
 
     @staticmethod
-    def parse_weight(data):
+    def parse_weight(
+        data
+    ):
 
         if not data:
 
@@ -565,36 +377,18 @@ class ScaleWorker(QObject):
 
         try:
 
-            # =================================================
-            # Convert Response to ASCII
-            # =================================================
-
             text = data.decode(
                 "ascii",
                 errors="ignore"
-            )
-
-            text = text.strip()
+            ).strip()
 
             if not text:
 
                 return None
 
-            # =================================================
-            # Find Numeric Value
-            #
-            # Supported examples:
-            #
-            # 12.345
-            # -12.345
-            # +12.345
-            # 0.001
-            # 123
-            # 1.23E-03
-            # =================================================
-
             matches = re.findall(
-                r"[-+]?\s*\d+(?:\.\d+)?(?:[eE][-+]?\d+)?",
+                r"[-+]?\s*\d+(?:\.\d+)?"
+                r"(?:[eE][-+]?\d+)?",
                 text
             )
 
@@ -603,7 +397,11 @@ class ScaleWorker(QObject):
                 return None
 
             return float(
-                re.sub(r"\s+", "", matches[0])
+                re.sub(
+                    r"\s+",
+                    "",
+                    matches[0]
+                )
             )
 
         except Exception:
@@ -611,9 +409,7 @@ class ScaleWorker(QObject):
             return None
 
     # =================================================
-    # Tare
-    #
-    # ESC T
+    # Tare Physical Scale
     # =================================================
 
     def tare(self):
@@ -638,26 +434,7 @@ class ScaleWorker(QObject):
 
                 return
 
-        except Exception:
-
-            self.command_result.emit(
-                False,
-                "Scale not connected."
-            )
-
-            return
-
-        try:
-
-            # =================================================
-            # Clear Old Response
-            # =================================================
-
             self.serial.reset_input_buffer()
-
-            # =================================================
-            # Send ESC T
-            # =================================================
 
             self.serial.write(
                 TARE
@@ -665,32 +442,9 @@ class ScaleWorker(QObject):
 
             self.serial.flush()
 
-            # =================================================
-            # Give Balance Time to Process
-            # =================================================
-
             time.sleep(
                 0.25
             )
-
-            # =================================================
-            # Clear Any Response
-            # =================================================
-
-            deadline = time.monotonic() + 2.0
-
-            while (
-                self.serial.in_waiting
-                and time.monotonic() < deadline
-            ):
-
-                self.serial.read(
-                    self.serial.in_waiting
-                )
-
-                time.sleep(
-                    0.05
-                )
 
             self.command_result.emit(
                 True,
@@ -706,9 +460,6 @@ class ScaleWorker(QObject):
 
     # =================================================
     # Zero
-    #
-    # No ZERO command was provided for this balance.
-    # Do not invent one.
     # =================================================
 
     def zero(self):
@@ -719,18 +470,19 @@ class ScaleWorker(QObject):
         )
 
     # =================================================
-    # Close Serial
+    # Close Physical Serial Port
     # =================================================
 
     def _close_serial(self):
 
         try:
 
-            if self.serial is not None:
+            if (
+                self.serial is not None
+                and self.serial.is_open
+            ):
 
-                if self.serial.is_open:
-
-                    self.serial.close()
+                self.serial.close()
 
         except Exception:
 
@@ -741,7 +493,7 @@ class ScaleWorker(QObject):
         self.read_in_progress = False
 
     # =================================================
-    # Disconnect
+    # Disconnect Physical Scale
     # =================================================
 
     def disconnect_scale(self):
@@ -768,7 +520,10 @@ class ScaleControlWindow(QWidget):
 
     disconnect_worker = pyqtSignal()
 
-    def __init__(self, hide_on_close=False):
+    def __init__(
+        self,
+        hide_on_close=False
+    ):
 
         super().__init__()
 
@@ -776,31 +531,24 @@ class ScaleControlWindow(QWidget):
 
         self._read_pending = False
 
-        # =================================================
-        # 1.9 UPDATE
-        #
-        # Scale health state.
-        #
-        # connected:
-        #     COM port is open and the balance was verified.
-        #
-        # system_healthy:
-        #     Valid weight readings are currently being
-        #     received within the health-check timeout.
-        #
-        # These are intentionally separate states.
-        # A health failure does NOT disconnect the COM port.
-        # =================================================
+        self.connected = False
 
         self.system_healthy = False
 
         self.last_valid_reading = None
 
-        self.health_timeout = 6.0
+        self.health_timeout = SCALE_HEALTH_TIMEOUT
 
         # =================================================
-        # Window
+        # Simulation Device Interface
+        #
+        # No simulation values or calculations are stored
+        # in this file.
         # =================================================
+
+        self.simulation_mode = False
+
+        self.simulated_device = None
 
         self.setWindowTitle(
             "Scale Control"
@@ -808,14 +556,8 @@ class ScaleControlWindow(QWidget):
 
         self.resize(
             700,
-            600
+            650
         )
-
-        # =================================================
-        # State
-        # =================================================
-
-        self.connected = False
 
         # =================================================
         # Worker Thread
@@ -830,10 +572,6 @@ class ScaleControlWindow(QWidget):
         self.worker.moveToThread(
             self.thread
         )
-
-        # =================================================
-        # Worker Signals
-        # =================================================
 
         self.connect_worker.connect(
             self.worker.connect_scale
@@ -855,10 +593,6 @@ class ScaleControlWindow(QWidget):
             self.worker.disconnect_scale
         )
 
-        # =================================================
-        # Worker Results
-        # =================================================
-
         self.worker.connection_result.connect(
             self.connection_finished
         )
@@ -875,10 +609,6 @@ class ScaleControlWindow(QWidget):
             self.worker_error
         )
 
-        # =================================================
-        # Start Worker
-        # =================================================
-
         self.thread.finished.connect(
             self.worker.disconnect_scale
         )
@@ -886,7 +616,7 @@ class ScaleControlWindow(QWidget):
         self.thread.start()
 
         # =================================================
-        # Weight Timer
+        # Polling Timer
         # =================================================
 
         self.timer = QTimer(
@@ -898,17 +628,11 @@ class ScaleControlWindow(QWidget):
         )
 
         self.timer.start(
-            2000
+            SCALE_POLL_INTERVAL
         )
 
         # =================================================
-        # 1.9 UPDATE
-        #
-        # System Health Check Timer
-        #
-        # Health is evaluated every 6 seconds.
-        #
-        # Normal weight polling remains every 2 seconds.
+        # Health Timer
         # =================================================
 
         self.health_timer = QTimer(
@@ -920,12 +644,8 @@ class ScaleControlWindow(QWidget):
         )
 
         self.health_timer.start(
-            6000
+            SCALE_HEALTH_CHECK_INTERVAL
         )
-
-        # =================================================
-        # Create UI
-        # =================================================
 
         self.init_ui()
 
@@ -960,10 +680,6 @@ class ScaleControlWindow(QWidget):
                 color: #FFFFFF;
             }
 
-            QLabel {
-                color: #D0D0D0;
-            }
-
             QPushButton {
                 background-color: #1E1E1E;
                 color: #D0D0D0;
@@ -977,13 +693,7 @@ class ScaleControlWindow(QWidget):
                 color: #FFFFFF;
             }
 
-            QPushButton:pressed {
-                background-color: #005A99;
-                color: #FFFFFF;
-            }
-
             QPushButton:disabled {
-                background-color: #1E1E1E;
                 color: #666666;
                 border: 1px solid #444444;
             }
@@ -993,11 +703,6 @@ class ScaleControlWindow(QWidget):
                 color: #D0D0D0;
                 border: 1px solid #0080FF;
                 padding: 6px;
-            }
-
-            QComboBox:hover {
-                background-color: #003B66;
-                color: #FFFFFF;
             }
 
             QComboBox QAbstractItemView {
@@ -1010,10 +715,6 @@ class ScaleControlWindow(QWidget):
         )
 
         main_layout = QVBoxLayout()
-
-        # =================================================
-        # Title
-        # =================================================
 
         title = QLabel(
             "SCALE CONTROL"
@@ -1040,14 +741,41 @@ class ScaleControlWindow(QWidget):
         # =================================================
 
         communication_group = QGroupBox(
-            "RS-485 Communication"
+            "Scale Communication"
         )
 
         communication_layout = QGridLayout()
 
         communication_layout.addWidget(
-            QLabel("COM Port:"),
+            QLabel("Connection Mode:"),
             0,
+            0
+        )
+
+        self.mode_box = QComboBox()
+
+        self.mode_box.addItems(
+            [
+                "Hardware (RS-485)",
+                "Simulation"
+            ]
+        )
+
+        self.mode_box.currentTextChanged.connect(
+            self.update_connection_mode
+        )
+
+        communication_layout.addWidget(
+            self.mode_box,
+            0,
+            1,
+            1,
+            3
+        )
+
+        communication_layout.addWidget(
+            QLabel("COM Port:"),
+            1,
             0
         )
 
@@ -1055,7 +783,7 @@ class ScaleControlWindow(QWidget):
 
         communication_layout.addWidget(
             self.com_box,
-            0,
+            1,
             1
         )
 
@@ -1069,7 +797,7 @@ class ScaleControlWindow(QWidget):
 
         communication_layout.addWidget(
             self.refresh_button,
-            0,
+            1,
             2
         )
 
@@ -1083,13 +811,13 @@ class ScaleControlWindow(QWidget):
 
         communication_layout.addWidget(
             self.connect_button,
-            0,
+            1,
             3
         )
 
         communication_layout.addWidget(
             QLabel("Baud Rate:"),
-            1,
+            2,
             0
         )
 
@@ -1112,7 +840,7 @@ class ScaleControlWindow(QWidget):
 
         communication_layout.addWidget(
             self.baud_box,
-            1,
+            2,
             1
         )
 
@@ -1180,13 +908,6 @@ class ScaleControlWindow(QWidget):
 
         self.weight_status.setAlignment(
             Qt.AlignCenter
-        )
-
-        self.weight_status.setStyleSheet(
-            """
-            color: #D0D0D0;
-            font-size: 14px;
-            """
         )
 
         live_layout.addWidget(
@@ -1275,13 +996,6 @@ class ScaleControlWindow(QWidget):
             "Disconnected"
         )
 
-        self.status_label.setStyleSheet(
-            """
-            color: #FF4D4D;
-            font-weight: bold;
-            """
-        )
-
         status_layout.addWidget(
             self.status_label,
             0,
@@ -1298,13 +1012,6 @@ class ScaleControlWindow(QWidget):
             "----"
         )
 
-        self.reading_status.setStyleSheet(
-            """
-            color: #FFFFFF;
-            font-weight: bold;
-            """
-        )
-
         status_layout.addWidget(
             self.reading_status,
             1,
@@ -1319,17 +1026,9 @@ class ScaleControlWindow(QWidget):
             status_group
         )
 
-        # =================================================
-        # Set Layout
-        # =================================================
-
         self.setLayout(
             main_layout
         )
-
-        # =================================================
-        # Initial Setup
-        # =================================================
 
         self.refresh_ports()
 
@@ -1337,15 +1036,65 @@ class ScaleControlWindow(QWidget):
             False
         )
 
+        self.update_connection_mode(
+            self.mode_box.currentText()
+        )
+
+        self.set_status(
+            "Disconnected",
+            "#FF4D4D"
+        )
+
+    # =================================================
+    # Connection Mode
+    # =================================================
+
+    def update_connection_mode(
+        self,
+        mode
+    ):
+
+        if self.connected:
+
+            return
+
+        simulation = (
+            mode == "Simulation"
+        )
+
+        self.com_box.setEnabled(
+            not simulation
+        )
+
+        self.refresh_button.setEnabled(
+            not simulation
+        )
+
+        self.baud_box.setEnabled(
+            not simulation
+        )
+
+        if simulation:
+
+            self.set_status(
+                "Simulation selected",
+                "#FFA500"
+            )
+
+        else:
+
+            self.set_status(
+                "Hardware mode selected",
+                "#0080FF"
+            )
+
     # =================================================
     # Refresh Ports
     # =================================================
 
     def refresh_ports(self):
 
-        current = (
-            self.com_box.currentText()
-        )
+        current = self.com_box.currentText()
 
         self.com_box.clear()
 
@@ -1359,23 +1108,19 @@ class ScaleControlWindow(QWidget):
 
         else:
 
-            for port in ports:
+            self.com_box.addItems(
+                ports
+            )
 
-                self.com_box.addItem(
-                    port
+            index = self.com_box.findText(
+                current
+            )
+
+            if index >= 0:
+
+                self.com_box.setCurrentIndex(
+                    index
                 )
-
-            if current:
-
-                index = self.com_box.findText(
-                    current
-                )
-
-                if index >= 0:
-
-                    self.com_box.setCurrentIndex(
-                        index
-                    )
 
     # =================================================
     # Enable Controls
@@ -1404,106 +1149,183 @@ class ScaleControlWindow(QWidget):
 
     def toggle_connection(self):
 
-        # =================================================
-        # CONNECT
-        #
-        # Do NOT assume that opening the COM port means
-        # the balance is connected.
-        # =================================================
-
-        if not self.connected:
-
-            port = self.com_box.currentText()
-
-            if (
-                not port
-                or port == "No COM Ports Found"
-            ):
-
-                self.set_status(
-                    "Select a COM port.",
-                    "red"
-                )
-
-                return
-
-            try:
-
-                baudrate = int(
-                    self.baud_box.currentText()
-                )
-
-            except ValueError:
-
-                self.set_status(
-                    "Invalid baud rate.",
-                    "red"
-                )
-
-                return
-
-            # =================================================
-            # Sartorius 1773MP requires 1200 baud.
-            # =================================================
-
-            if baudrate != 1200:
-
-                self.set_status(
-                    "Sartorius 1773MP requires 1200 baud.",
-                    "red"
-                )
-
-                return
-
-            # =================================================
-            # Connecting
-            # =================================================
-
-            self.set_status(
-                "Connecting...",
-                "orange"
-            )
-
-            self.connect_button.setEnabled(
-                False
-            )
-
-            self.refresh_button.setEnabled(
-                False
-            )
-
-            # Make sure controls remain disabled until
-            # the balance is actually verified.
-
-            self.set_controls_enabled(
-                False
-            )
-
-            # =================================================
-            # 1.9 UPDATE
-            #
-            # Reset health state before a new connection.
-            # =================================================
-
-            self.system_healthy = False
-
-            self.last_valid_reading = None
-
-            self.connect_worker.emit(
-                port,
-                baudrate
-            )
-
-        # =================================================
-        # DISCONNECT
-        # =================================================
-
-        else:
+        if self.connected:
 
             self.disconnect_scale()
 
+            return
+
+        selected_mode = (
+            self.mode_box.currentText()
+        )
+
+        if selected_mode == "Simulation":
+
+            self.connect_simulation()
+
+            return
+
+        port = self.com_box.currentText()
+
+        if (
+            not port
+            or port == "No COM Ports Found"
+        ):
+
+            self.set_status(
+                "Select a COM port.",
+                "#FF4D4D"
+            )
+
+            return
+
+        try:
+
+            baudrate = int(
+                self.baud_box.currentText()
+            )
+
+        except ValueError:
+
+            self.set_status(
+                "Invalid baud rate.",
+                "#FF4D4D"
+            )
+
+            return
+
+        if baudrate != 1200:
+
+            self.set_status(
+                "Sartorius 1773MP requires 1200 baud.",
+                "#FF4D4D"
+            )
+
+            return
+
+        self.simulation_mode = False
+
+        self.set_status(
+            "Connecting...",
+            "#FFA500"
+        )
+
+        self.connect_button.setEnabled(
+            False
+        )
+
+        self.refresh_button.setEnabled(
+            False
+        )
+
+        self.set_controls_enabled(
+            False
+        )
+
+        self.system_healthy = False
+
+        self.last_valid_reading = None
+
+        self.connect_worker.emit(
+            port,
+            baudrate
+        )
+
     # =================================================
-    # Connection Finished
+    # Connect Simulated Scale
+    # =================================================
+
+    def connect_simulation(self):
+
+        try:
+
+            self.simulated_device = SimulatedScaleDevice(
+                environment=get_simulation_environment()
+            )
+
+            success = (
+                self.simulated_device.connect()
+            )
+
+        except Exception as exc:
+
+            print(
+                f"Simulated Scale Connection Error: {exc}"
+            )
+
+            success = False
+
+        if not success:
+
+            self.simulated_device = None
+
+            self.simulation_mode = False
+
+            self.connected = False
+
+            self.set_status(
+                "Simulation Connection Failed",
+                "#FF4D4D"
+            )
+
+            return
+
+        self.simulation_mode = True
+
+        self.connected = True
+
+        self.system_healthy = True
+
+        self.last_valid_reading = time.monotonic()
+
+        self.mode_box.setEnabled(
+            False
+        )
+
+        self.com_box.setEnabled(
+            False
+        )
+
+        self.baud_box.setEnabled(
+            False
+        )
+
+        self.refresh_button.setEnabled(
+            False
+        )
+
+        self.connect_button.setText(
+            "Disconnect"
+        )
+
+        self.set_controls_enabled(
+            True
+        )
+
+        self.set_status(
+            "Connected - Simulation",
+            "#00D26A"
+        )
+
+        self.reading_status.setText(
+            "Live Simulation"
+        )
+
+        self.reading_status.setStyleSheet(
+            """
+            color: #FFFFFF;
+            font-weight: bold;
+            """
+        )
+
+        self.weight_status.setText(
+            "Simulated reading"
+        )
+
+        self.read_simulated_weight()
+
+    # =================================================
+    # Physical Connection Result
     # =================================================
 
     def connection_finished(
@@ -1519,25 +1341,17 @@ class ScaleControlWindow(QWidget):
             True
         )
 
-        # =================================================
-        # VERIFIED CONNECTION
-        # =================================================
-
         if success:
 
             self.connected = True
 
-            # =================================================
-            # 1.9 UPDATE
-            #
-            # The initial valid ESC P response has already
-            # been received by weight_received().
-            #
-            # Mark the system healthy here as well so the
-            # verified connection starts in a healthy state.
-            # =================================================
-
             self.system_healthy = True
+
+            self.simulation_mode = False
+
+            self.mode_box.setEnabled(
+                False
+            )
 
             self.connect_button.setText(
                 "Disconnect"
@@ -1556,26 +1370,9 @@ class ScaleControlWindow(QWidget):
                 "Live"
             )
 
-            self.reading_status.setStyleSheet(
-                """
-                color: #FFFFFF;
-                font-weight: bold;
-                """
-            )
-
-        # =================================================
-        # CONNECTION FAILED
-        # =================================================
-
         else:
 
             self.connected = False
-
-            # =================================================
-            # 1.9 UPDATE
-            #
-            # Reset health state after a failed connection.
-            # =================================================
 
             self.system_healthy = False
 
@@ -1598,30 +1395,68 @@ class ScaleControlWindow(QWidget):
                 "Not Connected"
             )
 
-            self.reading_status.setStyleSheet(
-                """
-                color: #FF4D4D;
-                font-weight: bold;
-                """
+    # =================================================
+    # Read Simulated Weight
+    #
+    # This method only communicates with the simulated
+    # device. No simulation calculation is performed here.
+    # =================================================
+
+    def read_simulated_weight(self):
+
+        if (
+            not self.connected
+            or not self.simulation_mode
+            or self.simulated_device is None
+        ):
+
+            return
+
+        try:
+
+            weight = (
+                self.simulated_device.read_weight()
             )
 
+        except Exception as exc:
+
+            self.worker_error(
+                str(exc)
+            )
+
+            return
+
+        self.weight_received(
+            weight
+        )
+
+        if weight is not None:
+
             self.weight_status.setText(
-                "Waiting for scale..."
+                "Simulated reading"
+            )
+
+            self.reading_status.setText(
+                "Live Simulation"
             )
 
     # =================================================
-    # Automatic Weight Request
-    #
-    # Only requests a reading after the balance has
-    # been successfully verified.
+    # Request Weight
     # =================================================
 
     def request_weight(self):
 
-        if self._read_pending:
+        if not self.connected:
+
             return
 
-        if not self.connected:
+        if self.simulation_mode:
+
+            self.read_simulated_weight()
+
+            return
+
+        if self._read_pending:
 
             return
 
@@ -1630,7 +1465,7 @@ class ScaleControlWindow(QWidget):
         self.read_weight_worker.emit()
 
     # =================================================
-    # Manual ESC P Request
+    # Manual Request
     # =================================================
 
     def manual_request_weight(self):
@@ -1667,13 +1502,6 @@ class ScaleControlWindow(QWidget):
                 "No scale response"
             )
 
-            self.weight_status.setStyleSheet(
-                """
-                color: #D0D0D0;
-                font-size: 14px;
-                """
-            )
-
             self.reading_status.setText(
                 "No response"
             )
@@ -1697,48 +1525,16 @@ class ScaleControlWindow(QWidget):
 
             return
 
-        # =================================================
-        # 1.9 UPDATE
-        #
-        # Record the time of every valid weight response.
-        #
-        # The health check uses this timestamp rather than
-        # counting failed polling attempts.
-        # =================================================
-
         self.last_valid_reading = time.monotonic()
 
         self.system_healthy = True
-
-        # =================================================
-        # LIVE MASS
-        # =================================================
 
         self.weight_label.setText(
             f"{weight:.4f} g"
         )
 
-        self.weight_label.setStyleSheet(
-            """
-            color: #FFFFFF;
-            font-size: 42px;
-            font-weight: bold;
-            """
-        )
-
-        # =================================================
-        # LIVE STATUS
-        # =================================================
-
         self.weight_status.setText(
             "Live reading"
-        )
-
-        self.weight_status.setStyleSheet(
-            """
-            color: #D0D0D0;
-            font-size: 14px;
-            """
         )
 
         self.reading_status.setText(
@@ -1753,44 +1549,14 @@ class ScaleControlWindow(QWidget):
         )
 
     # =================================================
-    # 1.9 UPDATE
-    # System Health Check
-    #
-    # The scale is checked every 6 seconds.
-    #
-    # Health is determined by whether a valid weight
-    # response has been received within the last 6 seconds.
-    #
-    # IMPORTANT:
-    #
-    # A failed health check does NOT close the COM port.
-    #
-    # Weight polling continues every 2 seconds.
-    #
-    # The system automatically returns to healthy when
-    # a valid weight response is received again.
-    #
-    # Terminal output:
-    #
-    #     Scale_health_check PASS
-    #
-    #     Scale_health_check FAIL
+    # Health Check
     # =================================================
 
     def system_health_check(self):
 
-        # =================================================
-        # Only perform the health evaluation when the
-        # balance has been successfully connected.
-        # =================================================
-
         if not self.connected:
 
             return
-
-        # =================================================
-        # No valid reading has been received.
-        # =================================================
 
         if self.last_valid_reading is None:
 
@@ -1804,60 +1570,20 @@ class ScaleControlWindow(QWidget):
                 "Communication Unhealthy"
             )
 
-            self.reading_status.setStyleSheet(
-                """
-                color: orange;
-                font-weight: bold;
-                """
-            )
-
             return
-
-        # =================================================
-        # Determine how long it has been since the last
-        # valid scale response.
-        # =================================================
 
         elapsed = (
             time.monotonic()
             - self.last_valid_reading
         )
 
-        # =================================================
-        # HEALTHY
-        #
-        # A valid weight has been received within the
-        # 6-second health-check window.
-        # =================================================
-
-        if elapsed < self.health_timeout:
+        if elapsed <= self.health_timeout:
 
             self.system_healthy = True
 
             print(
                 "Scale_health_check PASS"
             )
-
-            self.reading_status.setText(
-                "Live"
-            )
-
-            self.reading_status.setStyleSheet(
-                """
-                color: #FFFFFF;
-                font-weight: bold;
-                """
-            )
-
-        # =================================================
-        # UNHEALTHY
-        #
-        # No valid weight has been received for 6 seconds.
-        #
-        # The COM port remains open.
-        #
-        # The normal 2-second polling continues.
-        # =================================================
 
         else:
 
@@ -1881,28 +1607,17 @@ class ScaleControlWindow(QWidget):
     # =================================================
     # Get Weight
     #
-    # IMPORTANT:
-    #
-    # The main TGA GUI calls this function.
-    #
-    # No serial communication is performed here.
-    #
-    # It simply returns the latest verified/displayed
-    # balance reading.
+    # Returns the most recently received weight.
+    # It performs no hardware or simulation operation.
     # =================================================
 
     def get_weight(self):
-
-        # Do not provide a weight to the main GUI unless
-        # the balance has actually been verified connected.
 
         if not self.connected:
 
             return None
 
-        text = (
-            self.weight_label.text()
-        )
+        text = self.weight_label.text()
 
         if not text:
 
@@ -1910,17 +1625,11 @@ class ScaleControlWindow(QWidget):
 
         try:
 
-            value = (
-                text
-                .replace(
+            return float(
+                text.replace(
                     "g",
                     ""
-                )
-                .strip()
-            )
-
-            return float(
-                value
+                ).strip()
             )
 
         except Exception:
@@ -1942,6 +1651,31 @@ class ScaleControlWindow(QWidget):
 
             return
 
+        if self.simulation_mode:
+
+            success = (
+                self.simulated_device is not None
+                and self.simulated_device.tare()
+            )
+
+            if success:
+
+                self.read_simulated_weight()
+
+                self.set_status(
+                    "Simulated scale tared.",
+                    "#00D26A"
+                )
+
+            else:
+
+                self.set_status(
+                    "Simulated tare failed.",
+                    "#FF4D4D"
+                )
+
+            return
+
         self.tare_worker.emit()
 
     # =================================================
@@ -1959,6 +1693,31 @@ class ScaleControlWindow(QWidget):
 
             return
 
+        if self.simulation_mode:
+
+            success = (
+                self.simulated_device is not None
+                and self.simulated_device.zero()
+            )
+
+            if success:
+
+                self.read_simulated_weight()
+
+                self.set_status(
+                    "Simulated scale zeroed.",
+                    "#00D26A"
+                )
+
+            else:
+
+                self.set_status(
+                    "Simulated zero failed.",
+                    "#FF4D4D"
+                )
+
+            return
+
         self.zero_worker.emit()
 
     # =================================================
@@ -1971,19 +1730,12 @@ class ScaleControlWindow(QWidget):
         message
     ):
 
-        if success:
-
-            self.set_status(
-                message,
-                "#00D26A"
-            )
-
-        else:
-
-            self.set_status(
-                message,
-                "#FF4D4D"
-            )
+        self.set_status(
+            message,
+            "#00D26A"
+            if success
+            else "#FF4D4D"
+        )
 
     # =================================================
     # Status
@@ -2034,33 +1786,39 @@ class ScaleControlWindow(QWidget):
             "Communication Error"
         )
 
-        self.reading_status.setStyleSheet(
-            """
-            color: #FF4D4D;
-            font-weight: bold;
-            """
-        )
-
     # =================================================
     # Disconnect
     # =================================================
 
     def disconnect_scale(self):
 
-        self.disconnect_worker.emit()
+        if self.simulation_mode:
+
+            if self.simulated_device is not None:
+
+                try:
+
+                    self.simulated_device.disconnect()
+
+                except Exception:
+
+                    pass
+
+        else:
+
+            self.disconnect_worker.emit()
+
+        self.simulated_device = None
 
         self.connected = False
-
-        # =================================================
-        # 1.9 UPDATE
-        #
-        # Reset health state when the user intentionally
-        # disconnects the balance.
-        # =================================================
 
         self.system_healthy = False
 
         self.last_valid_reading = None
+
+        self._read_pending = False
+
+        self.simulation_mode = False
 
         self.connect_button.setText(
             "Connect"
@@ -2070,17 +1828,13 @@ class ScaleControlWindow(QWidget):
             True
         )
 
-        self.refresh_button.setEnabled(
+        self.mode_box.setEnabled(
             True
         )
 
         self.set_controls_enabled(
             False
         )
-
-        # =================================================
-        # Reset Live Values
-        # =================================================
 
         self.weight_label.setText(
             "0.0000 g"
@@ -2090,27 +1844,17 @@ class ScaleControlWindow(QWidget):
             "Waiting for scale..."
         )
 
-        self.weight_status.setStyleSheet(
-            """
-            color: #D0D0D0;
-            font-size: 14px;
-            """
-        )
-
         self.reading_status.setText(
             "Waiting"
-        )
-
-        self.reading_status.setStyleSheet(
-            """
-            color: #FFFFFF;
-            font-weight: bold;
-            """
         )
 
         self.set_status(
             "Disconnected",
             "#FF4D4D"
+        )
+
+        self.update_connection_mode(
+            self.mode_box.currentText()
         )
 
     # =================================================
@@ -2130,18 +1874,31 @@ class ScaleControlWindow(QWidget):
 
             return
 
-        # =================================================
-        # 1.9 UPDATE
-        #
-        # Stop the health-check timer when the window
-        # is permanently closing.
-        # =================================================
-
         self.health_timer.stop()
 
         self.timer.stop()
 
-        self.disconnect_worker.emit()
+        if self.simulation_mode:
+
+            if self.simulated_device is not None:
+
+                try:
+
+                    self.simulated_device.disconnect()
+
+                except Exception:
+
+                    pass
+
+        else:
+
+            self.disconnect_worker.emit()
+
+        self.simulated_device = None
+
+        self.connected = False
+
+        self.simulation_mode = False
 
         self.thread.quit()
 
