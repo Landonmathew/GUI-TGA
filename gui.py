@@ -279,7 +279,7 @@ class TGA_GUI(QWidget):
         # =================================================
 
         self.title = QLabel(
-            "THERMOGRAVIMETRIC ANALYZER"
+            "Real-Time Intstrumentation & Numeric Output"
         )
 
         self.title.setStyleSheet(
@@ -303,7 +303,7 @@ class TGA_GUI(QWidget):
         # =================================================
 
         status_group = QGroupBox(
-            "TGA System Status"
+            "RINO System Status"
         )
 
         status_layout = QGridLayout()
@@ -390,7 +390,7 @@ class TGA_GUI(QWidget):
         # =================================================
 
         live_group = QGroupBox(
-            "Live TGA Data"
+            "Live RINO Data"
         )
 
         live_layout = QGridLayout()
