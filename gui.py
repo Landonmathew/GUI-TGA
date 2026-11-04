@@ -11,7 +11,7 @@
 # This software was developed for use with the
 # TGA system at NREC/USF.
 #
-# Version 1.9
+# Version 2.0
 #
 # Main GUI
 #
@@ -23,7 +23,7 @@
 #     - Experiment control
 #     - Live data display
 #     - Graphs
-#     - CSV export
+#     - Automatic CSV logging
 #     - Opening the Scale Controller
 #     - Opening the Temperature Controller
 #
@@ -32,6 +32,7 @@
 import sys
 import time
 import csv
+import os
 
 from PyQt5.QtWidgets import (
     QApplication,
@@ -64,6 +65,17 @@ from scale_controller import (
 
 
 # =====================================================
+# Timing
+# =====================================================
+
+# One measurement and CSV row every six seconds.
+ACQUISITION_INTERVAL = 6000
+
+# Refresh only the visible elapsed-time display.
+DISPLAY_INTERVAL = 250
+
+
+# =====================================================
 # Main GUI Class
 # =====================================================
 
@@ -75,6 +87,9 @@ class TGA_GUI(QWidget):
 
         # =================================================
         # Data Storage
+        #
+        # Every measurement collected during the experiment
+        # remains in RAM.
         # =================================================
 
         self.time_data = []
@@ -92,6 +107,16 @@ class TGA_GUI(QWidget):
         self.latest_temperature = 0.0
 
         # =================================================
+        # Automatic CSV Logging
+        # =================================================
+
+        self.csv_file = None
+
+        self.csv_writer = None
+
+        self.csv_file_path = None
+
+        # =================================================
         # Plot Window
         # =================================================
 
@@ -102,7 +127,9 @@ class TGA_GUI(QWidget):
         # =================================================
 
         self.temperature_controller_window = (
-            TemperatureControllerWindow(hide_on_close=True)
+            TemperatureControllerWindow(
+                hide_on_close=True
+            )
         )
 
         # =================================================
@@ -110,34 +137,59 @@ class TGA_GUI(QWidget):
         # =================================================
 
         self.scale_control_window = (
-            ScaleControlWindow(hide_on_close=True)
+            ScaleControlWindow(
+                hide_on_close=True
+            )
         )
 
         # =================================================
-        # Main Experiment Update Timer
+        # Experiment Acquisition Timer
+        #
+        # This timer creates RAM measurements and CSV rows.
         # =================================================
 
-        self.timer = QTimer(self)
+        self.timer = QTimer(
+            self
+        )
+
+        self.timer.setTimerType(
+            Qt.PreciseTimer
+        )
 
         self.timer.timeout.connect(
             self.update_system
         )
 
         # =================================================
-        # Connection Monitoring Timer
+        # Elapsed-Time Display Timer
         #
-        # This timer runs independently of the experiment.
-        # It allows the GUI to detect connected devices
-        # before the user starts an experiment.
+        # This timer does not collect or save measurements.
         # =================================================
 
-        self.connection_timer = QTimer(self)
+        self.display_timer = QTimer(
+            self
+        )
+
+        self.display_timer.setTimerType(
+            Qt.PreciseTimer
+        )
+
+        self.display_timer.timeout.connect(
+            self.update_elapsed_time
+        )
+
+        # =================================================
+        # Connection Monitoring Timer
+        # =================================================
+
+        self.connection_timer = QTimer(
+            self
+        )
 
         self.connection_timer.timeout.connect(
             self.update_connection_status
         )
 
-        # Check connections every 1 second
         self.connection_timer.start(
             1000
         )
@@ -147,13 +199,6 @@ class TGA_GUI(QWidget):
         # =================================================
 
         self.init_ui()
-
-        # =================================================
-        # Check Connections Immediately
-        #
-        # This avoids waiting one full second for the
-        # first connection check.
-        # =================================================
 
         self.update_connection_status()
 
@@ -171,26 +216,6 @@ class TGA_GUI(QWidget):
             config.MAIN_WIDTH,
             config.MAIN_HEIGHT
         )
-
-        # =================================================
-        # Theme
-        #
-        # Main background:
-        #     Dark gray
-        #
-        # Normal text:
-        #     Light gray
-        #
-        # Section headers:
-        #     White
-        #
-        # Blue:
-        #     Accent color for title and controls
-        #
-        # Status colors:
-        #     Green = Connected / Running
-        #     Red = Disconnected / Stopped / Error
-        # =================================================
 
         self.setStyleSheet(
             """
@@ -247,14 +272,10 @@ class TGA_GUI(QWidget):
             """
         )
 
-        # =================================================
-        # Main Layout
-        # =================================================
-
         main_layout = QVBoxLayout()
 
         # =================================================
-        # TITLE
+        # Title
         # =================================================
 
         self.title = QLabel(
@@ -278,7 +299,7 @@ class TGA_GUI(QWidget):
         )
 
         # =================================================
-        # SYSTEM STATUS
+        # System Status
         # =================================================
 
         status_group = QGroupBox(
@@ -365,7 +386,7 @@ class TGA_GUI(QWidget):
         )
 
         # =================================================
-        # LIVE DATA
+        # Live Data
         # =================================================
 
         live_group = QGroupBox(
@@ -439,7 +460,7 @@ class TGA_GUI(QWidget):
         )
 
         # =================================================
-        # Time
+        # Elapsed Time
         # =================================================
 
         live_layout.addWidget(
@@ -575,7 +596,7 @@ class TGA_GUI(QWidget):
         )
 
         # =================================================
-        # EXPERIMENT CONTROLS
+        # Experiment Controls
         # =================================================
 
         experiment_group = QGroupBox(
@@ -583,10 +604,6 @@ class TGA_GUI(QWidget):
         )
 
         experiment_layout = QHBoxLayout()
-
-        # =================================================
-        # Start
-        # =================================================
 
         self.start_button = QPushButton(
             "Start Experiment"
@@ -600,10 +617,6 @@ class TGA_GUI(QWidget):
             self.start_button
         )
 
-        # =================================================
-        # Stop
-        # =================================================
-
         self.stop_button = QPushButton(
             "Stop Experiment"
         )
@@ -612,13 +625,13 @@ class TGA_GUI(QWidget):
             self.stop_experiment
         )
 
+        self.stop_button.setEnabled(
+            False
+        )
+
         experiment_layout.addWidget(
             self.stop_button
         )
-
-        # =================================================
-        # Graphs
-        # =================================================
 
         self.plot_button = QPushButton(
             "Open Graphs"
@@ -632,22 +645,6 @@ class TGA_GUI(QWidget):
             self.plot_button
         )
 
-        # =================================================
-        # Export
-        # =================================================
-
-        self.export_button = QPushButton(
-            "Export CSV"
-        )
-
-        self.export_button.clicked.connect(
-            self.export_csv
-        )
-
-        experiment_layout.addWidget(
-            self.export_button
-        )
-
         experiment_group.setLayout(
             experiment_layout
         )
@@ -657,7 +654,7 @@ class TGA_GUI(QWidget):
         )
 
         # =================================================
-        # EQUIPMENT CONTROL
+        # Equipment Control
         # =================================================
 
         equipment_group = QGroupBox(
@@ -665,10 +662,6 @@ class TGA_GUI(QWidget):
         )
 
         equipment_layout = QHBoxLayout()
-
-        # =================================================
-        # Temperature Controller
-        # =================================================
 
         self.controller_button = QPushButton(
             "Temperature Controller"
@@ -681,10 +674,6 @@ class TGA_GUI(QWidget):
         equipment_layout.addWidget(
             self.controller_button
         )
-
-        # =================================================
-        # Scale Controller
-        # =================================================
 
         self.scale_button = QPushButton(
             "Scale Control"
@@ -706,10 +695,6 @@ class TGA_GUI(QWidget):
             equipment_group
         )
 
-        # =================================================
-        # Set Layout
-        # =================================================
-
         self.setLayout(
             main_layout
         )
@@ -724,12 +709,82 @@ class TGA_GUI(QWidget):
 
             return
 
-        self.running = True
+        # =================================================
+        # Select CSV Before Starting
+        # =================================================
 
-        self.start_time = time.monotonic()
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Select TGA Experiment CSV",
+            "",
+            "CSV Files (*.csv)"
+        )
+
+        if not file_path:
+
+            self.set_experiment_status(
+                "Experiment Start Canceled",
+                "#FF4D4D"
+            )
+
+            return
+
+        if not file_path.lower().endswith(
+            ".csv"
+        ):
+
+            file_path += ".csv"
+
+        self.close_csv_log()
 
         # =================================================
-        # Clear Previous Data
+        # Create CSV Before Starting
+        # =================================================
+
+        try:
+
+            self.csv_file = open(
+                file_path,
+                "w",
+                newline="",
+                encoding="utf-8-sig"
+            )
+
+            self.csv_writer = csv.writer(
+                self.csv_file
+            )
+
+            self.csv_writer.writerow(
+                [
+                    "Time (s)",
+                    "Temperature (°C)",
+                    "Mass (g)"
+                ]
+            )
+
+            self.synchronize_csv()
+
+            self.csv_file_path = file_path
+
+        except Exception as exc:
+
+            self.close_csv_log()
+
+            self.csv_file_path = None
+
+            self.set_experiment_status(
+                "Unable to Create CSV",
+                "#FF4D4D"
+            )
+
+            print(
+                f"CSV Open Error: {exc}"
+            )
+
+            return
+
+        # =================================================
+        # Clear Previous Experiment Data
         # =================================================
 
         self.time_data.clear()
@@ -737,10 +792,6 @@ class TGA_GUI(QWidget):
         self.mass_data.clear()
 
         self.temp_data.clear()
-
-        # =================================================
-        # Reset Stored Values
-        # =================================================
 
         self.latest_mass = 0.0
 
@@ -758,34 +809,41 @@ class TGA_GUI(QWidget):
             "00:00:00"
         )
 
-        # =================================================
-        # Clear Graph
-        # =================================================
-
         self.plot_window.clear()
 
         # =================================================
-        # Start Experiment Update Timer
+        # Start Experiment
         # =================================================
+
+        self.start_time = time.monotonic()
+
+        self.running = True
+
+        self.start_button.setEnabled(
+            False
+        )
+
+        self.stop_button.setEnabled(
+            True
+        )
 
         self.timer.start(
-            config.REFRESH_RATE
+            ACQUISITION_INTERVAL
         )
 
-        self.status_label.setText(
-            "Running"
+        self.display_timer.start(
+            DISPLAY_INTERVAL
         )
 
-        # =================================================
-        # Running = Green
-        # =================================================
-
-        self.status_label.setStyleSheet(
-            """
-            color: #00D26A;
-            font-weight: bold;
-            """
+        self.set_experiment_status(
+            "Running - CSV Logging",
+            "#00D26A"
         )
+
+        # Record the starting condition immediately.
+        # Additional rows are recorded every six seconds.
+
+        self.update_system()
 
     # =====================================================
     # Stop Experiment
@@ -793,27 +851,62 @@ class TGA_GUI(QWidget):
 
     def stop_experiment(self):
 
+        if not self.running:
+
+            return
+
         self.running = False
 
         self.timer.stop()
 
-        self.status_label.setText(
-            "Stopped"
+        self.display_timer.stop()
+
+        self.start_button.setEnabled(
+            True
         )
 
-        # =================================================
-        # Stopped = Red
-        # =================================================
+        self.stop_button.setEnabled(
+            False
+        )
+
+        saved_path = self.csv_file_path
+
+        self.close_csv_log()
+
+        self.set_experiment_status(
+            "Stopped - Data Saved",
+            "#00D26A"
+        )
+
+        if saved_path:
+
+            print(
+                f"CSV data saved to: {saved_path}"
+            )
+
+    # =====================================================
+    # Experiment Status Helper
+    # =====================================================
+
+    def set_experiment_status(
+        self,
+        message,
+        color
+    ):
+
+        self.status_label.setText(
+            message
+        )
 
         self.status_label.setStyleSheet(
-            """
-            color: #FF4D4D;
+            f"""
+            color: {color};
             font-weight: bold;
             """
         )
 
     # =====================================================
-    # Open Graphs
+    # Open Child Windows
     # =====================================================
 
     def open_plots(self):
@@ -824,10 +917,6 @@ class TGA_GUI(QWidget):
 
         self.plot_window.activateWindow()
 
-    # =====================================================
-    # Open Temperature Controller
-    # =====================================================
-
     def open_temperature_controller(self):
 
         self.temperature_controller_window.show()
@@ -835,10 +924,6 @@ class TGA_GUI(QWidget):
         self.temperature_controller_window.raise_()
 
         self.temperature_controller_window.activateWindow()
-
-    # =====================================================
-    # Open Scale Controller
-    # =====================================================
 
     def open_scale_control(self):
 
@@ -849,7 +934,44 @@ class TGA_GUI(QWidget):
         self.scale_control_window.activateWindow()
 
     # =====================================================
-    # Update System
+    # Update Elapsed-Time Display
+    # =====================================================
+
+    def update_elapsed_time(self):
+
+        if (
+            not self.running
+            or self.start_time is None
+        ):
+
+            return
+
+        elapsed = (
+            time.monotonic()
+            - self.start_time
+        )
+
+        total_seconds = max(
+            0,
+            int(elapsed)
+        )
+
+        hours, remainder = divmod(
+            total_seconds,
+            3600
+        )
+
+        minutes, seconds = divmod(
+            remainder,
+            60
+        )
+
+        self.time_value.setText(
+            f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        )
+
+    # =====================================================
+    # Acquire One Measurement
     # =====================================================
 
     def update_system(self):
@@ -858,69 +980,30 @@ class TGA_GUI(QWidget):
 
             return
 
-        # =================================================
-        # Elapsed Time
-        # =================================================
-
         elapsed = (
-        time.monotonic()
-        - self.start_time
+            time.monotonic()
+            - self.start_time
         )
 
-        # Convert elapsed seconds to hh:mm:ss format
-        hours = int(elapsed // 3600)
-        minutes = int((elapsed % 3600) // 60)
-        seconds = int(elapsed % 60)
-        
-        self.time_value.setText(
-            f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-        )
+        self.update_elapsed_time()
 
-        # =================================================
-        # Read Temperature Controller
-        # =================================================
+        temperature = self.get_temperature()
 
-        temperature = (
-            self.get_temperature()
-        )
-
-        # =================================================
-        # Read Scale Controller
-        # =================================================
-
-        mass = (
-            self.get_mass()
-        )
-
-        # =================================================
-        # Connection Status
-        #
-        # Connection status is also monitored by the
-        # independent connection timer. This call keeps
-        # the status synchronized during an experiment.
-        # =================================================
+        mass = self.get_mass()
 
         self.update_connection_status()
 
-        # =================================================
-        # Record Only Valid Data
-        # =================================================
-
         if temperature is None:
 
-            temperature = (
-                float("nan")
+            temperature = float(
+                "nan"
             )
 
         if mass is None:
 
-            mass = (
-                float("nan")
+            mass = float(
+                "nan"
             )
-
-        # =================================================
-        # Record Measurement
-        # =================================================
 
         self.record_measurement(
             elapsed,
@@ -957,10 +1040,6 @@ class TGA_GUI(QWidget):
                 self.scale_control_window
             )
 
-            # =================================================
-            # Preferred method
-            # =================================================
-
             if hasattr(
                 scale_window,
                 "get_weight"
@@ -969,10 +1048,6 @@ class TGA_GUI(QWidget):
                 return (
                     scale_window.get_weight()
                 )
-
-            # =================================================
-            # Compatibility fallback
-            # =================================================
 
             if hasattr(
                 scale_window,
@@ -1021,36 +1096,29 @@ class TGA_GUI(QWidget):
                 .controller
             )
 
-            if (
+            connected = (
                 controller is not None
                 and controller.connected
-            ):
-
-                self.temperature_connection_status.setText(
-                    "Connected"
-                )
-
-                self.temperature_connection_status.setStyleSheet(
-                    """
-                    color: #00D26A;
-                    font-weight: bold;
-                    """
-                )
-
-            else:
-
-                self.temperature_connection_status.setText(
-                    "Disconnected"
-                )
-
-                self.temperature_connection_status.setStyleSheet(
-                    """
-                    color: #FF4D4D;
-                    font-weight: bold;
-                    """
-                )
+            )
 
         except Exception:
+
+            connected = False
+
+        if connected:
+
+            self.temperature_connection_status.setText(
+                "Connected"
+            )
+
+            self.temperature_connection_status.setStyleSheet(
+                """
+                color: #00D26A;
+                font-weight: bold;
+                """
+            )
+
+        else:
 
             self.temperature_connection_status.setText(
                 "Disconnected"
@@ -1069,55 +1137,28 @@ class TGA_GUI(QWidget):
 
         try:
 
-            scale_window = (
-                self.scale_control_window
+            scale_connected = bool(
+                self.scale_control_window.connected
             )
 
-            if hasattr(
-                scale_window,
-                "connected"
-            ):
-
-                if scale_window.connected:
-
-                    self.scale_connection_status.setText(
-                        "Connected"
-                    )
-
-                    self.scale_connection_status.setStyleSheet(
-                        """
-                        color: #00D26A;
-                        font-weight: bold;
-                        """
-                    )
-
-                else:
-
-                    self.scale_connection_status.setText(
-                        "Disconnected"
-                    )
-
-                    self.scale_connection_status.setStyleSheet(
-                        """
-                        color: #FF4D4D;
-                        font-weight: bold;
-                        """
-                    )
-
-            else:
-
-                self.scale_connection_status.setText(
-                    "Disconnected"
-                )
-
-                self.scale_connection_status.setStyleSheet(
-                    """
-                    color: #FF4D4D;
-                    font-weight: bold;
-                    """
-                )
-
         except Exception:
+
+            scale_connected = False
+
+        if scale_connected:
+
+            self.scale_connection_status.setText(
+                "Connected"
+            )
+
+            self.scale_connection_status.setStyleSheet(
+                """
+                color: #00D26A;
+                font-weight: bold;
+                """
+            )
+
+        else:
 
             self.scale_connection_status.setText(
                 "Disconnected"
@@ -1142,7 +1183,7 @@ class TGA_GUI(QWidget):
     ):
 
         # =================================================
-        # Store Data
+        # Store Every Point in RAM
         # =================================================
 
         self.time_data.append(
@@ -1156,16 +1197,6 @@ class TGA_GUI(QWidget):
         self.temp_data.append(
             temperature
         )
-
-        # =================================================
-        # Limit Data
-        # =================================================
-
-        self.limit_data_size()
-
-        # =================================================
-        # Store Latest Values
-        # =================================================
 
         self.latest_mass = mass
 
@@ -1183,20 +1214,99 @@ class TGA_GUI(QWidget):
             f"{temperature:.2f} °C"
         )
 
-        # =================================================
-        # Update Temperature Controller Displays
-        # =================================================
-
         self.update_temperature_displays()
 
         # =================================================
-        # Update Graph
+        # Update Graphs
         # =================================================
 
         self.plot_window.update_plots(
             self.time_data,
             self.mass_data,
             self.temp_data
+        )
+
+        # =================================================
+        # Write Measurement to CSV
+        # =================================================
+
+        if (
+            self.csv_file is None
+            or self.csv_writer is None
+        ):
+
+            self.stop_after_logging_failure(
+                "CSV file is not open."
+            )
+
+            return
+
+        try:
+
+            self.csv_writer.writerow(
+                [
+                    elapsed,
+                    temperature,
+                    mass
+                ]
+            )
+
+            self.synchronize_csv()
+
+        except Exception as exc:
+
+            self.stop_after_logging_failure(
+                str(exc)
+            )
+
+    # =====================================================
+    # Synchronize CSV
+    # =====================================================
+
+    def synchronize_csv(self):
+
+        if self.csv_file is None:
+
+            return
+
+        self.csv_file.flush()
+
+        os.fsync(
+            self.csv_file.fileno()
+        )
+
+    # =====================================================
+    # Stop After CSV Failure
+    # =====================================================
+
+    def stop_after_logging_failure(
+        self,
+        message
+    ):
+
+        print(
+            f"CSV Logging Error: {message}"
+        )
+
+        self.running = False
+
+        self.timer.stop()
+
+        self.display_timer.stop()
+
+        self.start_button.setEnabled(
+            True
+        )
+
+        self.stop_button.setEnabled(
+            False
+        )
+
+        self.close_csv_log()
+
+        self.set_experiment_status(
+            "Stopped - CSV Logging Failed",
+            "#FF4D4D"
         )
 
     # =====================================================
@@ -1211,10 +1321,6 @@ class TGA_GUI(QWidget):
                 self.temperature_controller_window
             )
 
-            # =================================================
-            # SP1
-            # =================================================
-
             if hasattr(
                 controller_window,
                 "sp1_display"
@@ -1226,10 +1332,6 @@ class TGA_GUI(QWidget):
                     .text()
                 )
 
-            # =================================================
-            # SP2
-            # =================================================
-
             if hasattr(
                 controller_window,
                 "sp2_display"
@@ -1240,10 +1342,6 @@ class TGA_GUI(QWidget):
                     .sp2_display
                     .text()
                 )
-
-            # =================================================
-            # Mode
-            # =================================================
 
             if hasattr(
                 controller_window,
@@ -1261,129 +1359,36 @@ class TGA_GUI(QWidget):
             pass
 
     # =====================================================
-    # Limit Data Size
+    # Close CSV Log
     # =====================================================
 
-    def limit_data_size(self):
+    def close_csv_log(self):
 
-        max_points = 10000
+        if self.csv_file is not None:
 
-        if len(
-            self.time_data
-        ) > max_points:
+            try:
 
-            self.time_data = (
-                self.time_data[-max_points:]
-            )
+                self.synchronize_csv()
 
-            self.mass_data = (
-                self.mass_data[-max_points:]
-            )
+            except Exception as exc:
 
-            self.temp_data = (
-                self.temp_data[-max_points:]
-            )
-
-    # =====================================================
-    # Export CSV
-    # =====================================================
-
-    def export_csv(self):
-
-        if not self.time_data:
-
-            self.status_label.setText(
-                "No Data to Export"
-            )
-
-            self.status_label.setStyleSheet(
-                """
-                color: #FF4D4D;
-                font-weight: bold;
-                """
-            )
-
-            return
-
-        file_path, _ = (
-            QFileDialog.getSaveFileName(
-                self,
-                "Save TGA Data",
-                "",
-                "CSV Files (*.csv)"
-            )
-        )
-
-        if not file_path:
-
-            return
-
-        try:
-
-            with open(
-                file_path,
-                "w",
-                newline="",
-                encoding="utf-8-sig"
-            ) as file:
-
-                writer = csv.writer(
-                    file
+                print(
+                    f"CSV Synchronization Error: {exc}"
                 )
 
-                writer.writerow(
-                    [
-                        "Time (s)",
-                        "Temperature (°C)",
-                        "Mass (g)"
-                    ]
+            try:
+
+                self.csv_file.close()
+
+            except Exception as exc:
+
+                print(
+                    f"CSV Close Error: {exc}"
                 )
 
-                for (
-                    elapsed,
-                    temperature,
-                    mass
-                ) in zip(
-                    self.time_data,
-                    self.temp_data,
-                    self.mass_data
-                ):
+        self.csv_file = None
 
-                    writer.writerow(
-                        [
-                            elapsed,
-                            temperature,
-                            mass
-                        ]
-                    )
-
-            self.status_label.setText(
-                "Data Exported"
-            )
-
-            self.status_label.setStyleSheet(
-                """
-                color: #FFFFFF;
-                font-weight: bold;
-                """
-            )
-
-        except Exception as exc:
-
-            self.status_label.setText(
-                "Export Failed"
-            )
-
-            self.status_label.setStyleSheet(
-                """
-                color: #FF4D4D;
-                font-weight: bold;
-                """
-            )
-
-            print(
-                f"CSV Export Error: {exc}"
-            )
+        self.csv_writer = None
 
     # =====================================================
     # Close Event
@@ -1394,23 +1399,15 @@ class TGA_GUI(QWidget):
         event
     ):
 
-        # =================================================
-        # Stop Experiment
-        # =================================================
-
         self.running = False
 
         self.timer.stop()
 
-        # =================================================
-        # Stop Connection Monitoring
-        # =================================================
+        self.display_timer.stop()
 
         self.connection_timer.stop()
 
-        # =================================================
-        # Close Graph Window
-        # =================================================
+        self.close_csv_log()
 
         try:
 
@@ -1420,26 +1417,20 @@ class TGA_GUI(QWidget):
 
             pass
 
-        # =================================================
-        # Close Temperature Controller
-        # =================================================
-
         try:
 
             self.temperature_controller_window.hide_on_close = False
+
             self.temperature_controller_window.close()
 
         except Exception:
 
             pass
 
-        # =================================================
-        # Close Scale Controller
-        # =================================================
-
         try:
 
             self.scale_control_window.hide_on_close = False
+
             self.scale_control_window.close()
 
         except Exception:
