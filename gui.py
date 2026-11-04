@@ -11,7 +11,7 @@
 # This software was developed for use with the
 # TGA system at NREC/USF.
 #
-# Version 1.8
+# Version 1.9
 #
 # Main GUI
 #
