@@ -117,7 +117,7 @@ class TGA_GUI(QWidget):
         # Main Experiment Update Timer
         # =================================================
 
-        self.timer = QTimer(self)
+        r = QTimer(self)
 
         self.timer.timeout.connect(
             self.update_system
@@ -449,7 +449,7 @@ class TGA_GUI(QWidget):
         )
 
         self.time_value = QLabel(
-            "0.0 s"
+            "00:00:00"
         )
 
         self.time_value.setAlignment(
@@ -755,7 +755,7 @@ class TGA_GUI(QWidget):
         )
 
         self.time_value.setText(
-            "0.0 s"
+            "00:00:00"
         )
 
         # =================================================
@@ -863,12 +863,17 @@ class TGA_GUI(QWidget):
         # =================================================
 
         elapsed = (
-            time.monotonic()
-            - self.start_time
+        time.monotonic()
+        - self.start_time
         )
 
+        # Convert elapsed seconds to hh:mm:ss format
+        hours = int(elapsed // 3600)
+        minutes = int((elapsed % 3600) // 60)
+        seconds = int(elapsed % 60)
+        
         self.time_value.setText(
-            f"{elapsed:.1f} s"
+            f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         )
 
         # =================================================
