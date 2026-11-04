@@ -11,7 +11,7 @@
 # This software was developed for use with the
 # TGA system at NREC/USF.
 #
-# Version 1.8
+# Version 2.1
 # =====================================================
 
 # -----------------------------
@@ -31,9 +31,9 @@ PLOT_HEIGHT = 900
 # Colors
 # -----------------------------
 
-BACKGROUND = "#000000"      # Black
+BACKGROUND = "#000000"
 
-TEXT = "#008CFF"            # Bright Blue
+TEXT = "#008CFF"
 
 BUTTON_RED = "#B22222"
 
@@ -69,7 +69,45 @@ PLOT_LINE_WIDTH = 2
 
 GRID_ALPHA = 0.25
 
-REFRESH_RATE = 100      # milliseconds
+
+# -----------------------------
+# Timing Settings
+# -----------------------------
+
+# Experiment data and CSV sample interval.
+#
+# 6000 milliseconds = 6 seconds.
+# This corresponds to a sample rate of 1/6 Hz.
+
+REFRESH_RATE = 6000
+
+
+# The elapsed-time display is independent of acquisition.
+#
+# 250 milliseconds updates the visible clock four times
+# per second without creating additional CSV measurements.
+
+DISPLAY_REFRESH_RATE = 250
+
+
+# Temperature controller and scale polling interval.
+#
+# Both devices are polled once every six seconds.
+
+DEVICE_POLL_INTERVAL = 6000
+
+
+# Device health is evaluated once every six seconds.
+
+HEALTH_CHECK_INTERVAL = 6000
+
+
+# A device is unhealthy after three complete polling
+# intervals without a valid response.
+#
+# 3 x 6 seconds = 18 seconds.
+
+HEALTH_TIMEOUT = 18.0
 
 
 # -----------------------------
@@ -89,6 +127,6 @@ DATA_FOLDER = "data"
 
 CSV_HEADER = [
     "Time (s)",
-    "Mass (g)",
-    "Temperature (°C)"
+    "Temperature (°C)",
+    "Mass (g)"
 ]
