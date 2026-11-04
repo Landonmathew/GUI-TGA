@@ -117,7 +117,7 @@ class TGA_GUI(QWidget):
         # Main Experiment Update Timer
         # =================================================
 
-        r = QTimer(self)
+        self.timer = QTimer(self)
 
         self.timer.timeout.connect(
             self.update_system
