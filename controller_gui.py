@@ -19,7 +19,13 @@
 # This software was developed for use with the
 # TGA system at NREC/USF.
 #
-# Version 1.9
+# Version 2.0
+#
+# Simulation calculations are contained entirely in:
+#
+#     simulated_temperature_controller.py
+#
+# This file only selects and opens the simulated device.
 # =====================================================
 
 import sys
@@ -50,7 +56,10 @@ from temperature_controller import (
     DEFAULT_ADDRESS,
 )
 
-from simulated_temperature_controller import SimulatedCN76000Serial
+from simulated_temperature_controller import (
+    SimulatedCN76000Serial,
+    get_simulation_environment,
+)
 
 
 # =====================================================
@@ -58,15 +67,19 @@ from simulated_temperature_controller import SimulatedCN76000Serial
 # =====================================================
 
 BLUE = "#0080FF"
+
 LIGHT_BLUE = "#00AAFF"
 
 WHITE = "#FFFFFF"
 
 LIGHT_GRAY = "#D0D0D0"
+
 DARK_GRAY = "#1E1E1E"
 
 DARK_GREEN = "#00D26A"
+
 ERROR_RED = "#FF4D4D"
+
 ALARM_RED = "#FF4D4D"
 
 ORANGE = "#FFA500"
@@ -78,15 +91,14 @@ DISABLED_GRAY = "#666666"
 # Timing
 # =====================================================
 
-# Normal controller polling interval
-CONTROLLER_POLL_INTERVAL = 2000
+# Poll the temperature controller every six seconds.
+CONTROLLER_POLL_INTERVAL = 6000
 
-# System health check interval
+# Evaluate health every six seconds.
 CONTROLLER_HEALTH_CHECK_INTERVAL = 6000
 
-# Maximum time allowed without a valid controller
-# state response before the health check reports FAIL.
-CONTROLLER_HEALTH_TIMEOUT = 6.0
+# Three polling intervals without a valid response.
+CONTROLLER_HEALTH_TIMEOUT = 18.0
 
 
 # =====================================================
@@ -95,11 +107,14 @@ CONTROLLER_HEALTH_TIMEOUT = 6.0
 
 class ControllerWorker(QObject):
 
-    connection_result = pyqtSignal(bool)
+    connection_result = pyqtSignal(
+        bool
+    )
 
-    controller_state_received = pyqtSignal(object)
+    controller_state_received = pyqtSignal(
+        object
+    )
 
-    # name, success, value, message
     setpoint_result = pyqtSignal(
         str,
         bool,
@@ -107,7 +122,9 @@ class ControllerWorker(QObject):
         str
     )
 
-    error = pyqtSignal(str)
+    error = pyqtSignal(
+        str
+    )
 
     def __init__(self):
 
@@ -129,15 +146,11 @@ class ControllerWorker(QObject):
 
         try:
 
-            # Simulation uses the same controller/protocol
-            # layer as hardware.
-            #
-            # Hardware mode retains the original real
-            # serial connection path.
-
             if mode == "Simulation":
 
-                simulated_serial = SimulatedCN76000Serial()
+                simulated_serial = SimulatedCN76000Serial(
+                    environment=get_simulation_environment()
+                )
 
                 self.controller = OmegaTemperatureController(
                     baudrate=baudrate,
@@ -316,7 +329,6 @@ class ControllerWorker(QObject):
                     f"{name} write failed."
                 )
 
-            # Return the EXACT value that was sent.
             self.setpoint_result.emit(
                 name,
                 success,
@@ -361,14 +373,10 @@ class ControllerWorker(QObject):
 
 
 # =====================================================
-# Main Temperature Controller Window
+# Temperature Controller Window
 # =====================================================
 
 class TemperatureControllerWindow(QWidget):
-
-    # =================================================
-    # Worker Signals
-    # =================================================
 
     connect_worker = pyqtSignal(
         str,
@@ -389,11 +397,10 @@ class TemperatureControllerWindow(QWidget):
 
     disconnect_worker = pyqtSignal()
 
-    # =================================================
-    # Initialize
-    # =================================================
-
-    def __init__(self, hide_on_close=False):
+    def __init__(
+        self,
+        hide_on_close=False
+    ):
 
         super().__init__()
 
@@ -401,23 +408,8 @@ class TemperatureControllerWindow(QWidget):
 
         self._read_pending = False
 
-        # =================================================
-        # System Health State
-        # =================================================
-
-        # This is separate from controller.connected.
-        #
-        # connected:
-        #     The controller communication connection is open.
-        #
-        # system_healthy:
-        #     Valid controller state responses are currently
-        #     being received.
-
         self.system_healthy = False
 
-        # Time of the most recent valid controller state
-        # response.
         self.last_valid_controller_response = None
 
         self.setWindowTitle(
@@ -428,10 +420,6 @@ class TemperatureControllerWindow(QWidget):
             700,
             600
         )
-
-        # =================================================
-        # Controller
-        # =================================================
 
         self.controller = None
 
@@ -448,10 +436,6 @@ class TemperatureControllerWindow(QWidget):
         self.worker.moveToThread(
             self.thread
         )
-
-        # =================================================
-        # Worker Connections
-        # =================================================
 
         self.connect_worker.connect(
             self.worker.connect_controller
@@ -512,7 +496,7 @@ class TemperatureControllerWindow(QWidget):
         )
 
         # =================================================
-        # Health Check Timer
+        # Health Timer
         # =================================================
 
         self.health_timer = QTimer(
@@ -526,10 +510,6 @@ class TemperatureControllerWindow(QWidget):
         self.health_timer.start(
             CONTROLLER_HEALTH_CHECK_INTERVAL
         )
-
-        # =================================================
-        # Build UI
-        # =================================================
 
         self.init_ui()
 
@@ -803,10 +783,6 @@ class TemperatureControllerWindow(QWidget):
 
         live_layout = QGridLayout()
 
-        # =================================================
-        # Process Value
-        # =================================================
-
         live_layout.addWidget(
             QLabel("Process Value:"),
             0,
@@ -831,10 +807,6 @@ class TemperatureControllerWindow(QWidget):
             1
         )
 
-        # =================================================
-        # SP1
-        # =================================================
-
         live_layout.addWidget(
             QLabel("SP1:"),
             1,
@@ -854,10 +826,6 @@ class TemperatureControllerWindow(QWidget):
             1,
             1
         )
-
-        # =================================================
-        # SP2
-        # =================================================
 
         live_layout.addWidget(
             QLabel("SP2:"),
@@ -879,10 +847,6 @@ class TemperatureControllerWindow(QWidget):
             1
         )
 
-        # =================================================
-        # Mode
-        # =================================================
-
         live_layout.addWidget(
             QLabel("Mode:"),
             0,
@@ -903,10 +867,6 @@ class TemperatureControllerWindow(QWidget):
             3
         )
 
-        # =================================================
-        # Control Location
-        # =================================================
-
         live_layout.addWidget(
             QLabel("Control Location:"),
             1,
@@ -926,10 +886,6 @@ class TemperatureControllerWindow(QWidget):
             1,
             3
         )
-
-        # =================================================
-        # Alarm
-        # =================================================
 
         live_layout.addWidget(
             QLabel("Alarm Relay:"),
@@ -968,10 +924,6 @@ class TemperatureControllerWindow(QWidget):
         )
 
         setpoint_layout = QGridLayout()
-
-        # =================================================
-        # SP1
-        # =================================================
 
         setpoint_layout.addWidget(
             QLabel("SP1:"),
@@ -1013,10 +965,6 @@ class TemperatureControllerWindow(QWidget):
             0,
             2
         )
-
-        # =================================================
-        # SP2
-        # =================================================
 
         setpoint_layout.addWidget(
             QLabel("SP2:"),
@@ -1077,10 +1025,6 @@ class TemperatureControllerWindow(QWidget):
 
         status_layout = QGridLayout()
 
-        # =================================================
-        # Communication
-        # =================================================
-
         status_layout.addWidget(
             QLabel("Communication:"),
             0,
@@ -1101,10 +1045,6 @@ class TemperatureControllerWindow(QWidget):
             1
         )
 
-        # =================================================
-        # Error
-        # =================================================
-
         status_layout.addWidget(
             QLabel("Error:"),
             1,
@@ -1124,10 +1064,6 @@ class TemperatureControllerWindow(QWidget):
             1,
             1
         )
-
-        # =================================================
-        # Decimal Places
-        # =================================================
 
         status_layout.addWidget(
             QLabel("Decimal Places:"),
@@ -1202,9 +1138,7 @@ class TemperatureControllerWindow(QWidget):
 
     def refresh_ports(self):
 
-        current = (
-            self.com_box.currentText()
-        )
+        current = self.com_box.currentText()
 
         self.com_box.clear()
 
@@ -1220,10 +1154,8 @@ class TemperatureControllerWindow(QWidget):
 
         if current:
 
-            index = (
-                self.com_box.findText(
-                    current
-                )
+            index = self.com_box.findText(
+                current
             )
 
             if index >= 0:
@@ -1268,17 +1200,13 @@ class TemperatureControllerWindow(QWidget):
             or not self.controller.connected
         ):
 
-            selected_mode = (
-                self.mode_box.currentText()
-            )
+            selected_mode = self.mode_box.currentText()
 
             simulation = (
                 selected_mode == "Simulation"
             )
 
-            port = (
-                self.com_box.currentText()
-            )
+            port = self.com_box.currentText()
 
             if not simulation and not port:
 
@@ -1363,7 +1291,6 @@ class TemperatureControllerWindow(QWidget):
                 self.worker.controller
             )
 
-            # Reset health tracking for the new connection.
             self.system_healthy = False
 
             self.last_valid_controller_response = None
@@ -1381,7 +1308,6 @@ class TemperatureControllerWindow(QWidget):
                 True
             )
 
-            # Immediately request the first state.
             self.request_state()
 
         else:
@@ -1411,8 +1337,6 @@ class TemperatureControllerWindow(QWidget):
 
     def system_health_check(self):
 
-        # Do not run the health evaluation when there is
-        # no active controller connection.
         if self.controller is None:
 
             return
@@ -1421,8 +1345,6 @@ class TemperatureControllerWindow(QWidget):
 
             return
 
-        # If no valid response has ever been received
-        # since connection, the controller is not healthy.
         if self.last_valid_controller_response is None:
 
             self.system_healthy = False
@@ -1438,20 +1360,20 @@ class TemperatureControllerWindow(QWidget):
             - self.last_valid_controller_response
         )
 
-        if elapsed >= CONTROLLER_HEALTH_TIMEOUT:
-
-            self.system_healthy = False
-
-            print(
-                "Temperature_controller_health_check FAIL"
-            )
-
-        else:
+        if elapsed <= CONTROLLER_HEALTH_TIMEOUT:
 
             self.system_healthy = True
 
             print(
                 "Temperature_controller_health_check PASS"
+            )
+
+        else:
+
+            self.system_healthy = False
+
+            print(
+                "Temperature_controller_health_check FAIL"
             )
 
     # =================================================
@@ -1464,7 +1386,6 @@ class TemperatureControllerWindow(QWidget):
 
         self.controller = None
 
-        # Reset health state.
         self.system_healthy = False
 
         self.last_valid_controller_response = None
@@ -1477,65 +1398,29 @@ class TemperatureControllerWindow(QWidget):
             False
         )
 
-        # =================================================
-        # Reset Live Values
-        # =================================================
-
         self.actual_temperature.setText(
             "---- °C"
-        )
-
-        self.actual_temperature.setStyleSheet(
-            f"""
-            font-size: 28px;
-            font-weight: bold;
-            color: {WHITE};
-            """
         )
 
         self.sp1_display.setText(
             "----"
         )
 
-        self.sp1_display.setStyleSheet(
-            f"color: {WHITE};"
-        )
-
         self.sp2_display.setText(
             "----"
-        )
-
-        self.sp2_display.setStyleSheet(
-            f"color: {WHITE};"
         )
 
         self.mode_display.setText(
             "----"
         )
 
-        self.mode_display.setStyleSheet(
-            f"color: {WHITE};"
-        )
-
         self.location_display.setText(
             "----"
-        )
-
-        self.location_display.setStyleSheet(
-            f"color: {WHITE};"
         )
 
         self.alarm_display.setText(
             "----"
         )
-
-        self.alarm_display.setStyleSheet(
-            f"color: {WHITE};"
-        )
-
-        # =================================================
-        # Reset Status Values
-        # =================================================
 
         self.error_status.setText(
             "NONE"
@@ -1549,13 +1434,13 @@ class TemperatureControllerWindow(QWidget):
             "----"
         )
 
-        self.decimal_status.setStyleSheet(
-            f"color: {WHITE};"
-        )
-
         self.set_status(
             "Disconnected",
             ERROR_RED
+        )
+
+        self.update_connection_mode(
+            self.mode_box.currentText()
         )
 
     # =================================================
@@ -1608,28 +1493,11 @@ class TemperatureControllerWindow(QWidget):
 
             return
 
-        # =================================================
-        # Valid Controller Response
-        # =================================================
-        #
-        # A valid state object means communication was
-        # successfully received from the controller.
-        #
-        # Update the health timestamp here.
-        # =================================================
-
         self.last_valid_controller_response = (
             time.monotonic()
         )
 
-        # Automatically recover the health state when
-        # valid communication returns.
-
         self.system_healthy = True
-
-        # =================================================
-        # Process Value
-        # =================================================
 
         if state.get("pv") is not None:
 
@@ -1637,59 +1505,17 @@ class TemperatureControllerWindow(QWidget):
                 f"{state['pv']:.2f} °C"
             )
 
-            self.actual_temperature.setStyleSheet(
-                f"""
-                font-size: 28px;
-                font-weight: bold;
-                color: {WHITE};
-                """
-            )
-
-        # =================================================
-        # SP1
-        # =================================================
-
         if state.get("sp1") is not None:
 
-            value = state["sp1"]
-
-            # Update ONLY the live controller display.
-            #
-            # The input box is intentionally NOT changed here.
-            # The input box is for entering the next setpoint.
-
             self.sp1_display.setText(
-                f"{value:.2f} °C"
+                f"{state['sp1']:.2f} °C"
             )
-
-            self.sp1_display.setStyleSheet(
-                f"color: {WHITE};"
-            )
-
-        # =================================================
-        # SP2
-        # =================================================
 
         if state.get("sp2") is not None:
 
-            value = state["sp2"]
-
-            # Update ONLY the live controller display.
-            #
-            # The input box is intentionally NOT changed here.
-            # The input box is for entering the next setpoint.
-
             self.sp2_display.setText(
-                f"{value:.2f} °C"
+                f"{state['sp2']:.2f} °C"
             )
-
-            self.sp2_display.setStyleSheet(
-                f"color: {WHITE};"
-            )
-
-        # =================================================
-        # Mode
-        # =================================================
 
         if state.get("mode"):
 
@@ -1697,27 +1523,11 @@ class TemperatureControllerWindow(QWidget):
                 state["mode"]
             )
 
-            self.mode_display.setStyleSheet(
-                f"color: {WHITE};"
-            )
-
-        # =================================================
-        # Control Location
-        # =================================================
-
         if state.get("control_location"):
 
             self.location_display.setText(
                 state["control_location"]
             )
-
-            self.location_display.setStyleSheet(
-                f"color: {WHITE};"
-            )
-
-        # =================================================
-        # Alarm
-        # =================================================
 
         alarm = state.get(
             "alarm_relay"
@@ -1743,10 +1553,6 @@ class TemperatureControllerWindow(QWidget):
                 f"color: {WHITE};"
             )
 
-        # =================================================
-        # Decimal Places
-        # =================================================
-
         if state.get(
             "decimal_places"
         ) is not None:
@@ -1756,14 +1562,6 @@ class TemperatureControllerWindow(QWidget):
                     state["decimal_places"]
                 )
             )
-
-            self.decimal_status.setStyleSheet(
-                f"color: {WHITE};"
-            )
-
-        # =================================================
-        # Full Error Status
-        # =================================================
 
         full_status = state.get(
             "full_status"
@@ -1775,33 +1573,27 @@ class TemperatureControllerWindow(QWidget):
                 full_status
             )
 
+        elif state.get(
+            "error_present"
+        ):
+
+            self.error_status.setText(
+                "ERROR PRESENT"
+            )
+
+            self.error_status.setStyleSheet(
+                f"color: {ERROR_RED}; font-weight: bold;"
+            )
+
         else:
 
-            if state.get(
-                "error_present"
-            ):
+            self.error_status.setText(
+                "NONE"
+            )
 
-                self.error_status.setText(
-                    "ERROR PRESENT"
-                )
-
-                self.error_status.setStyleSheet(
-                    f"color: {ERROR_RED}; font-weight: bold;"
-                )
-
-            else:
-
-                self.error_status.setText(
-                    "NONE"
-                )
-
-                self.error_status.setStyleSheet(
-                    f"color: {DARK_GREEN};"
-                )
-
-        # =================================================
-        # Communication Status
-        # =================================================
+            self.error_status.setStyleSheet(
+                f"color: {DARK_GREEN};"
+            )
 
         self.set_status(
             "Connected",
@@ -1877,9 +1669,7 @@ class TemperatureControllerWindow(QWidget):
 
             return
 
-        value = (
-            self.sp1_input.value()
-        )
+        value = self.sp1_input.value()
 
         self.sp1_button.setEnabled(
             False
@@ -1904,9 +1694,7 @@ class TemperatureControllerWindow(QWidget):
 
             return
 
-        value = (
-            self.sp2_input.value()
-        )
+        value = self.sp2_input.value()
 
         self.sp2_button.setEnabled(
             False
@@ -1933,10 +1721,6 @@ class TemperatureControllerWindow(QWidget):
         message
     ):
 
-        # =================================================
-        # Re-enable the buttons
-        # =================================================
-
         self.sp1_button.setEnabled(
             True
         )
@@ -1947,47 +1731,21 @@ class TemperatureControllerWindow(QWidget):
 
         if success:
 
-            # =================================================
-            # SP1
-            # =================================================
-
             if name == "SP1":
-
-                # Show the value that was actually sent
-                # to the controller.
 
                 self.sp1_display.setText(
                     f"{value:.2f} °C"
                 )
 
-                self.sp1_display.setStyleSheet(
-                    f"color: {WHITE};"
-                )
-
-                # Reset the command-entry box.
-
                 self.sp1_input.setValue(
                     0.0
                 )
 
-            # =================================================
-            # SP2
-            # =================================================
-
             elif name == "SP2":
-
-                # Show the value that was actually sent
-                # to the controller.
 
                 self.sp2_display.setText(
                     f"{value:.2f} °C"
                 )
-
-                self.sp2_display.setStyleSheet(
-                    f"color: {WHITE};"
-                )
-
-                # Reset the command-entry box.
 
                 self.sp2_input.setValue(
                     0.0
@@ -1997,9 +1755,6 @@ class TemperatureControllerWindow(QWidget):
                 message,
                 DARK_GREEN
             )
-
-            # Confirm the controller's actual value shortly
-            # after the write.
 
             QTimer.singleShot(
                 100,
@@ -2078,32 +1833,23 @@ class TemperatureControllerWindow(QWidget):
             ERROR_RED
         )
 
-        # IMPORTANT:
-        #
-        # Do not disconnect the controller here.
-        #
-        # The health check will determine whether the
-        # communication has actually been lost.
-        #
-        # The controller remains connected and polling
-        # continues every 2 seconds.
-
     # =================================================
     # Get Current Temperature
     #
-    # Compatibility method for the TGA software.
-    # No serial I/O is performed here.
+    # This returns the most recently received value.
+    # It performs no hardware or simulation operation.
     # =================================================
 
     def get_temperature(self):
 
-        if self.controller is None or not self.controller.connected:
+        if (
+            self.controller is None
+            or not self.controller.connected
+        ):
 
             return None
 
-        text = (
-            self.actual_temperature.text()
-        )
+        text = self.actual_temperature.text()
 
         if not text:
 
@@ -2153,17 +1899,7 @@ class TemperatureControllerWindow(QWidget):
 
 
 # =====================================================
-# Standalone Application Entry Point
-#
-# This allows:
-#
-#     python controller_gui.py
-#
-# to launch the controller window directly.
-#
-# When imported by the main GUI, this section does
-# NOT execute, so TemperatureControllerWindow can
-# still be imported and opened by the main application.
+# Standalone Application
 # =====================================================
 
 if __name__ == "__main__":
